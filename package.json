@@ -1,0 +1,19 @@
+{
+  "name": "verigraph",
+  "version": "1.0.0",
+  "private": true,
+  "description": "VeriGraph — extract figures, verify citations, generate evidence-grounded hypotheses via 3 collaborating agents.",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev --remote",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail",
+    "test": "node tests/e2e.test.js",
+    "selftest": "node -e \"fetch('https://verigraph.arechampionw.workers.dev/api/test').then(r=>r.json()).then(j=>{console.log(j.ok?'PASS':'FAIL',j.passed+'/'+j.total,'score',j.score.total,'$'+j.cost_usd);j.checks.forEach(c=>console.log((c.pass?' PASS':' FAIL'),c.name))})\""
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260817.1",
+    "typescript": "^5.6.0",
+    "wrangler": "^4.123.0"
+  }
+}

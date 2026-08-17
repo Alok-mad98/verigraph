@@ -1,0 +1,28 @@
+{
+  "paper_title": "Efficient Vision-Language Models for Scientific Figure Parsing",
+  "paper_text": "Abstract. We benchmark open-weight vision-language models on the task of parsing scientific figures into structured data, a bottleneck that consumes an estimated 3-5 hours per literature review. We introduce SciFig-Bench, a curated set of 1,200 figures from arXiv preprints across physics, biology, and ML, and evaluate four frontier models. Kimi K2.7 achieves the highest accuracy (91.2%) but at the cost of higher latency (340 ms), while GLM 5.2 offers the best latency-accuracy trade-off at 88.7% accuracy and 210 ms. We find that figure-parsing accuracy correlates more strongly with vision pretraining data volume than with total parameter count. Our results suggest that dedicated figure-extraction pipelines can reduce literature-review time by roughly 60%. Prior work by Smith et al. (2024) established that structured figure extraction improves downstream retrieval, and Chen & Patel (2025) showed multimodal models match human accuracy on chart reading, motivating our cross-domain benchmark.",
+  "figures": [
+    {
+      "name": "table1.png",
+      "image_base64": "<generated client-side by the UI 'Load demo paper' button — a 460x230 PNG of a 4-row accuracy/latency table>",
+      "mime_type": "image/png"
+    }
+  ],
+  "citations": [
+    {
+      "id": "C1",
+      "raw_text": "Smith, J., Lee, A. Structured extraction of figures improves scientific document retrieval. Journal of Machine Learning Research 25.112 (2024).",
+      "claim": "Structured figure extraction improves downstream retrieval of scientific documents."
+    },
+    {
+      "id": "C2",
+      "raw_text": "Chen, R., Patel, V. Multimodal large language models reach human-level accuracy on chart question answering. NeurIPS 2025.",
+      "claim": "Multimodal LLMs match human accuracy on chart reading tasks."
+    },
+    {
+      "id": "C3",
+      "raw_text": "Zhang, Q. et al. Generative figure parsing with diffusion transformers. ICML 2024.",
+      "claim": "Diffusion-based figure parsers outperform autoregressive ones."
+    }
+  ]
+}

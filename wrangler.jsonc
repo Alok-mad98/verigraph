@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "verigraph",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-17",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": {
+    "binding": "AI"
+  },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "VISION_MODELS": "@cf/moonshotai/kimi-k2.7-code,@cf/moonshotai/kimi-k2.6,@cf/meta/llama-4-scout-17b-16e-instruct",
+    "TEXT_MODELS": "@cf/zai-org/glm-5.2,@cf/zai-org/glm-4.7-flash,@cf/openai/gpt-oss-20b,@cf/qwen/qwen3-30b-a3b-fp8",
+    "VISION_MODEL": "@cf/moonshotai/kimi-k2.7-code",
+    "TEXT_MODEL": "@cf/zai-org/glm-5.2",
+    "FALLBACK_TEXT_MODEL": "@cf/zai-org/glm-4.7-flash",
+    "CONTACT_EMAIL": "verigraph@example.com",
+    "MAX_FETCH_BYTES": "15728640"
+  }
+}
