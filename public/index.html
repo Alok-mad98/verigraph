@@ -281,6 +281,7 @@
 <script>
 const $=(s)=>document.querySelector(s);
 const statusEl=$("#status"),resultsEl=$("#results"),bar=$("#bar");
+const esc=(s)=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
 let ENDPOINT="/api/analyze";
 try{ENDPOINT=$("#hl").textContent=location.origin+ENDPOINT;$("#hl").textContent=ENDPOINT;}catch(e){}
 
@@ -289,7 +290,7 @@ function setBar(p){bar.style.width=(p*100)+"%";}
 
 $("#addCite").onclick=()=>{const r=document.createElement("div");r.className="citrow";r.innerHTML='<input type="text" class="citeRaw" placeholder="Full citation text" /><input type="text" class="citeClaim" placeholder="Claim attributed to it" />';$("#citations").appendChild(r);};
 let figureFiles=[];
-$("#figures").onchange=(e)=>{figureFiles=Array.from(e.target.files);$("#figPreview").innerHTML=figureFiles.map(f=>`<img src="${URL.createObjectURL(f)}" alt="${f.name}">`).join("");};
+$("#figures").onchange=(e)=>{figureFiles=Array.from(e.target.files);window.__demoFigure=null;$("#figPreview").innerHTML=figureFiles.map(f=>`<img src="${URL.createObjectURL(f)}" alt="${f.name}">`).join("");};
 const fileToB64=(f)=>new Promise(r=>{const x=new FileReader();x.onload=()=>r(x.result.split(",")[1]);x.readAsDataURL(f);});
 
 // --- Auto-fill helpers: title + references from a PDF ---
@@ -362,8 +363,9 @@ $("#pdfs").onchange=async (e)=>{
   const files=Array.from(e.target.files);
   if(!files.length) return;
   setStatus("Parsing "+files.length+" PDF(s)…");setBar(0.05);
+  window.__demoFigure=null;
   const lib=await loadPdfjs();
-  pdfFigures=[]; let allText="";
+  pdfFigures=[]; pdfCount=0; let allText="";
   for(let fi=0; fi<files.length; fi++){
     const f=files[fi];
     const buf=await f.arrayBuffer();
@@ -410,6 +412,7 @@ $("#loadLink").onclick=async ()=>{
   const link=$("#link").value.trim();
   if(!link){setStatus("Enter a URL first.");return;}
   setStatus("Fetching link…");setBar(0.1);
+  window.__demoFigure=null; figureFiles=[];
   let r;
   try{ r=await fetch("/api/fetch?url="+encodeURIComponent(link)); }
   catch(e){setStatus("Network error: "+e.message);return;}
@@ -475,16 +478,18 @@ async function loadDemo(){
   rows[0].querySelector(".citeClaim").value="Self-attention mechanisms enable parallelizable sequence modeling without recurrence.";
   const r2=document.createElement("div");r2.className="citrow";r2.innerHTML='<input type="text" class="citeRaw" value="Chen, R., Patel, V. Multimodal large language models reach human-level accuracy on chart question answering. NeurIPS 2025." /><input type="text" class="citeClaim" value="Multimodal LLMs match human accuracy on chart reading tasks." />';$("#citations").appendChild(r2);
   const r3=document.createElement("div");r3.className="citrow";r3.innerHTML='<input type="text" class="citeRaw" value="Zhang, Q. et al. Generative figure parsing with diffusion transformers. ICML 2024." /><input type="text" class="citeClaim" value="Diffusion-based figure parsers outperform autoregressive ones." />';$("#citations").appendChild(r3);
-  figureFiles=[];$("#figures").value="";$("#figPreview").innerHTML=`<img src="data:image/png;base64,${t.base64}" alt="table1.png">`;
+  figureFiles=[];pdfFigures=[];pdfCount=0;$("#figures").value="";$("#pdfs").value="";$("#pdfInfo").textContent="";$("#figPreview").innerHTML=`<img src="data:image/png;base64,${t.base64}" alt="table1.png">`;
   window.__demoFigure=t;
   setStatus("Demo loaded. Click “Run pipeline”.");
 }
 $("#loadDemo").onclick=loadDemo;
 
 async function run(){
+  const btn=$("#run"); btn.disabled=true;
+  const done=()=>{btn.disabled=false;};
   setStatus("Running 3-agent pipeline…");setBar(0.1);
   const paper=$("#paper").value.trim();
-  if(paper.length<20){setStatus("Paper text too short.");return;}
+  if(paper.length<20){setStatus("Paper text too short.");done();return;}
   const figures=[];
   if(window.__demoFigure)figures.push(window.__demoFigure);
   for(const f of figureFiles)figures.push({name:f.name,image_base64:await fileToB64(f),mime_type:f.type||"image/png"});
@@ -494,10 +499,14 @@ async function run(){
   setBar(0.25);
   let res;
   try{res=await fetch("/api/analyze",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({paper_text:paper,paper_title:$("#title").value,figures,citations})});}
-  catch(e){setStatus("Network error: "+e.message);return;}
+  catch(e){setStatus("Network error: "+e.message);done();return;}
   setBar(0.9);
-  if(!res.ok){setStatus("HTTP "+res.status+" — "+(await res.text()).slice(0,300));return;}
-  const data=await res.json();setBar(1);setStatus("");render(data);
+  if(!res.ok){setStatus("HTTP "+res.status+" — "+(await res.text()).slice(0,300));done();return;}
+  const data=await res.json();setBar(1);setStatus("");
+  lastReport=data.report_markdown||null;
+  $("#dlReport").disabled=!lastReport;
+  render(data);
+  done();
 }
 $("#run").onclick=run;
 
@@ -517,7 +526,7 @@ let lastReport=null;
 $("#dlReport").onclick=()=>{ if(!lastReport) return; const blob=new Blob([lastReport],{type:"text/markdown"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="verigraph-report.md"; a.click(); };
 
 function render(d){
-  let h=`<div class="summary">${d.summary||""}</div>`;
+  let h=`<div class="summary">${esc(d.summary||"")}</div>`;
   if(d.score){
     const sc=d.score; const bd=sc.breakdown||{}; const total=sc.total??0;
     const grade=total>=80?"A":total>=65?"B":total>=50?"C":"D";
@@ -527,30 +536,30 @@ function render(d){
     h+=`<div class="bars">`;
     const names={data_extraction:"Figure extraction",citation_integrity:"Citation integrity",evidence_grounding:"Evidence grounding",coverage:"Coverage"};
     for(const k in names){const v=bd[k]!=null?bd[k]:0;h+=`<div class="barrow"><div class="barlab">${names[k]}</div><div class="bartrack"><div class="barfill" style="width:${Math.max(0,Math.min(100,v))}%"></div></div><div class="barval">${v}</div></div>`;}
-    h+=`</div>${sc.note?`<div class="scorenote">${sc.note}</div>`:""}</div>`;
+    h+=`</div>${sc.note?`<div class="scorenote">${esc(sc.note)}</div>`:""}</div>`;
   }
   h+=`<h2 class="sec">Extracted data (${d.extracted_data.length})</h2>`;
   d.extracted_data.forEach(ex=>{const cols=Object.keys(ex.schema||{});
-    h+=`<div class="rcard"><h3>${ex.figure_name} <span class="pill">${ex.kind}</span> <span class="pill ${ex.confidence>0.8?'ok':'warn'}">conf ${ex.confidence}</span></h3><div class="ev">${ex.caption}</div>`;
-    if(cols.length){h+=`<table class="data"><thead><tr>${cols.map(c=>`<th>${c}</th>`).join("")}</tr></thead><tbody>`;(ex.rows||[]).slice(0,15).forEach(r=>h+=`<tr>${cols.map(c=>`<td>${r[c]??""}</td>`).join("")}</tr>`);h+=`</tbody></table>`;}
-    if(ex.anomalies&&ex.anomalies.length)h+=`<div class="ev">Anomalies: ${ex.anomalies.join(" · ")}</div></div>`;else h+=`</div>`;});
+    h+=`<div class="rcard"><h3>${esc(ex.figure_name)} <span class="pill">${esc(ex.kind)}</span> <span class="pill ${ex.confidence>0.8?'ok':'warn'}">conf ${ex.confidence}</span></h3><div class="ev">${esc(ex.caption)}</div>`;
+    if(cols.length){h+=`<table class="data"><thead><tr>${cols.map(c=>`<th>${esc(c)}</th>`).join("")}</tr></thead><tbody>`;(ex.rows||[]).slice(0,15).forEach(r=>h+=`<tr>${cols.map(c=>`<td>${esc(r[c]??"")}</td>`).join("")}</tr>`);h+=`</tbody></table>`;}
+    if(ex.anomalies&&ex.anomalies.length)h+=`<div class="ev">Anomalies: ${ex.anomalies.map(esc).join(" · ")}</div></div>`;else h+=`</div>`;});
 
   h+=`<h2 class="sec">Citation verdicts (${d.citation_verdicts.length})</h2>`;
-  d.citation_verdicts.forEach(v=>{const ico=v.status==='verified'?'✓':(v.status==='fabricated'||v.status==='not_found')?'✗':'⚠';h+=`<div class="rcard"><h3>${ico} ${v.citation_id} <span class="pill ${v.status==='verified'?'ok':(v.status==='fabricated'||v.status==='not_found')?'bad':'warn'}">${v.status}</span></h3><div class="ev"><b>Cited as:</b> ${v.raw_text}</div>${v.claim?`<div class="ev"><b>Claim:</b> ${v.claim}</div>`:""}<div class="ev"><b>Matched:</b> ${v.matched_title||"(none)"} ${v.matched_doi?`· DOI <a href="https://doi.org/${v.matched_doi}" target="_blank" rel="noopener" class="gold">${v.matched_doi}</a>`:""} ${v.matched_year?`· ${v.matched_year}`:""} · score ${v.match_score}</div><div class="v-${v.status}">${v.reasoning}</div></div>`;});
+  d.citation_verdicts.forEach(v=>{const ico=v.status==='verified'?'✓':(v.status==='fabricated'||v.status==='not_found')?'✗':'⚠';h+=`<div class="rcard"><h3>${ico} ${esc(v.citation_id)} <span class="pill ${v.status==='verified'?'ok':(v.status==='fabricated'||v.status==='not_found')?'bad':'warn'}">${esc(v.status)}</span></h3><div class="ev"><b>Cited as:</b> ${esc(v.raw_text)}</div>${v.claim?`<div class="ev"><b>Claim:</b> ${esc(v.claim)}</div>`:""}<div class="ev"><b>Matched:</b> ${esc(v.matched_title||"(none)")} ${v.matched_doi?`· DOI <a href="https://doi.org/${encodeURIComponent(v.matched_doi)}" target="_blank" rel="noopener" class="gold">${esc(v.matched_doi)}</a>`:""} ${v.matched_year?`· ${esc(v.matched_year)}`:""} · score ${v.match_score}</div><div class="v-${v.status}">${esc(v.reasoning)}</div></div>`;});
 
   h+=`<h2 class="sec">Agent handoffs (evidence graph)</h2>`;
-  if(d.handoffs&&d.handoffs.length){h+=`<div class="rcard">`;d.handoffs.forEach(hf=>h+=`<div class="ev"><b>${hf.from}</b> → <b>${hf.to}</b> via <span class="mono">${hf.state}</span> (${hf.item_count} item(s))</div>`);h+=`</div>`;}else{h+=`<div class="rcard ev">No handoffs recorded.</div>`;}
+  if(d.handoffs&&d.handoffs.length){h+=`<div class="rcard">`;d.handoffs.forEach(hf=>h+=`<div class="ev"><b>${esc(hf.from)}</b> → <b>${esc(hf.to)}</b> via <span class="mono">${esc(hf.state)}</span> (${hf.item_count} item(s))</div>`);h+=`</div>`;}else{h+=`<div class="rcard ev">No handoffs recorded.</div>`;}
 
   h+=`<h2 class="sec">Hypotheses (${d.hypotheses.length})</h2>`;
-  d.hypotheses.forEach(hp=>{h+=`<div class="hyp ${hp.classification}"><div><b>${hp.id}.</b> ${hp.statement} <span class="pill ${hp.classification==='SUPPORTED'?'ok':'warn'}">${hp.classification}</span></div>${hp.evidence_pointers&&hp.evidence_pointers.length?`<div class="ev">Evidence: ${hp.evidence_pointers.join(" · ")}</div>`:""}<div class="ev">Rationale: ${hp.rationale}</div><div class="ev">Testability: ${hp.testability}</div></div>`;});
+  d.hypotheses.forEach(hp=>{h+=`<div class="hyp ${hp.classification}"><div><b>${esc(hp.id)}.</b> ${esc(hp.statement)} <span class="pill ${hp.classification==='SUPPORTED'?'ok':'warn'}">${esc(hp.classification)}</span></div>${hp.evidence_pointers&&hp.evidence_pointers.length?`<div class="ev">Evidence: ${hp.evidence_pointers.map(esc).join(" · ")}</div>`:""}<div class="ev">Rationale: ${esc(hp.rationale)}</div><div class="ev">Testability: ${esc(hp.testability)}</div></div>`;});
 
   h+=`<h2 class="sec">Agent execution trace</h2><div class="trace head"><div>Agent</div><div>Model</div><div>ms</div><div>USD</div></div>`;
-  d.trace.forEach(t=>h+=`<div class="trace"><div>${t.agent}<br><span class="ev">${t.role} · ${t.note}</span></div><div class="mono">${t.model}</div><div>${t.duration_ms}</div><div>${t.cost_usd.toFixed(6)}</div></div>`);
+  d.trace.forEach(t=>h+=`<div class="trace"><div>${esc(t.agent)}<br><span class="ev">${esc(t.role)} · ${esc(t.note)}</span></div><div class="mono">${esc(t.model)}</div><div>${t.duration_ms}</div><div>${t.cost_usd.toFixed(6)}</div></div>`);
 
   h+=`<h2 class="sec">Cost table</h2><table class="data"><thead><tr><th>Agent</th><th>Model</th><th>Prompt</th><th>Completion</th><th>USD</th></tr></thead><tbody>`;
-  d.cost_table.forEach(c=>h+=`<tr><td>${c.agent}</td><td class="mono">${c.model}</td><td>${c.prompt_tokens}</td><td>${c.completion_tokens}</td><td>${c.cost_usd.toFixed(6)}</td></tr>`);
+  d.cost_table.forEach(c=>h+=`<tr><td>${esc(c.agent)}</td><td class="mono">${esc(c.model)}</td><td>${c.prompt_tokens}</td><td>${c.completion_tokens}</td><td>${c.cost_usd.toFixed(6)}</td></tr>`);
   h+=`<tr><td colspan="4"><b>Total</b></td><td><b>${d.total_cost_usd.toFixed(6)}</b></td></tr></tbody></table>`;
-  h+=`<details><summary>Raw JSON</summary><pre class="mono">${JSON.stringify(d,null,2).replace(/</g,"&lt;")}</pre></details>`;
+  h+=`<details><summary>Raw JSON</summary><pre class="mono">${esc(JSON.stringify(d,null,2))}</pre></details>`;
   resultsEl.innerHTML=h;
   resultsEl.scrollIntoView({behavior:"smooth",block:"start"});
 }
