@@ -134,6 +134,7 @@ interface PipelineResult {
   total_cost_usd: number;
   score: Score;
   research_hours_saved: number;
+  plain_summary: string;
   report_markdown: string;
   summary: string;
 }
@@ -616,8 +617,8 @@ async function runHypothesisGenerator(
       null,
       2,
     ) +
-    `\n\nPAPER EXCERPT (first 4000 chars):\n` +
-    state.paper_text.slice(0, 4000);
+    `\n\nPAPER EXCERPT (first 12000 chars):\n` +
+    state.paper_text.slice(0, 12000);
 
   const payload = {
     messages: [
@@ -655,6 +656,19 @@ async function runHypothesisGenerator(
 // ===========================================================================
 // Orchestrator
 // ===========================================================================
+
+// Helpers for the plain-language summary.
+function anomaliesNote(data: ExtractedDatum[]): string {
+  const all = data.flatMap((d) => d.anomalies || []);
+  if (!all.length) return "";
+  const first = all[0].slice(0, 60);
+  return ` We flagged ${all.length} issue(s) while reading (e.g., ${first}).`;
+}
+function webNote(verdicts: CitationVerdict[]): string {
+  const web = verdicts.filter((v) => v.web_title);
+  if (!web.length) return "";
+  return ` ${web.length} reference(s) were confirmed via live web search (not just Crossref).`;
+}
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -956,9 +970,53 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
     (usableFigures * 0.5 + verifiedCount * 0.2 + supportedCount * 0.3).toFixed(2),
   );
 
+  // ---- Plain-language summary (clear, simple, specific to this paper) ----
+  const grade = totalScore >= 80 ? "A — trustworthy" : totalScore >= 65 ? "B — mostly reliable" : totalScore >= 50 ? "C — mixed signals" : "D — needs review";
+  const realCites = citation_verdicts.filter((v) => v.status === "verified");
+  const fakeCites = citation_verdicts.filter((v) => v.status === "fabricated" || v.status === "not_found");
+  const supportedHyps = hypotheses.filter((h) => h.classification === "SUPPORTED");
+  const specHyps = hypotheses.filter((h) => h.classification === "SPECULATION");
+
+  const plainLines: string[] = [];
+  plainLines.push(`Here is what VeriGraph found in "${body.paper_title ?? "your paper"}":`);
+  plainLines.push("");
+  // Figures
+  if (extracted_data.length > 0) {
+    const figSum = extracted_data.slice(0, 3).map((d) => `'${d.figure_name}' (${d.rows.length} rows: ${Object.keys(d.schema).join(", ") || "n/a"})`).join("; ");
+    plainLines.push(`Figures: We read ${extracted_data.length} figure(s) and turned them into structured data — ${figSum}.${anomaliesNote(extracted_data)}`);
+  } else {
+    plainLines.push("Figures: We couldn't extract any structured data from the figures provided (none were given, or they didn't contain readable tables/charts).");
+  }
+  // Citations
+  if (citation_verdicts.length > 0) {
+    const realNames = realCites.slice(0, 2).map((v) => `"${(v.matched_title || v.raw_text).slice(0, 70)}"`).join(", ");
+    const fakeNames = fakeCites.slice(0, 2).map((v) => `"${v.raw_text.slice(0, 70)}"`).join(", ");
+    let c = `Citations: Of ${citation_verdicts.length} reference(s), ${verifiedCount} check out as real`;
+    if (realNames) c += ` (e.g., ${realNames})`;
+    c += ` and ${fakeCites.length} look fabricated or missing`;
+    if (fakeNames) c += ` (e.g., ${fakeNames})`;
+    c += `.${webNote(citation_verdicts)}`;
+    plainLines.push(c);
+  } else {
+    plainLines.push("Citations: No references were provided to verify.");
+  }
+  // Hypotheses
+  if (hypotheses.length > 0) {
+    const exHyp = supportedHyps[0]?.statement.slice(0, 90);
+    plainLines.push(`Next steps: We propose ${hypotheses.length} new research question(s) — ${supportedHyps.length} are directly supported by your data${exHyp ? ` (e.g., "${exHyp}")` : ""} and ${specHyps.length} are reasonable speculation to explore further.`);
+  } else {
+    plainLines.push("Next steps: We were unable to generate research questions from the available evidence.");
+  }
+  plainLines.push("");
+  plainLines.push(`Bottom line: trustworthiness ${totalScore}/100 (${grade}). This analysis would have taken roughly ${research_hours_saved} hour(s) of manual work and cost $${totalCost.toFixed(4)} to run.`);
+  const plain_summary = plainLines.join("\n");
+
   // ---- Markdown report (auditable, exportable) ----
   const report = [
     `# VeriGraph report — ${body.paper_title ?? "(untitled)"}`,
+    "",
+    `## Plain-language summary`,
+    plain_summary,
     "",
     `**Trustworthiness score: ${totalScore}/100**  ·  Estimated research time saved: **${research_hours_saved} h**  ·  Run cost: **$${totalCost.toFixed(6)}**`,
     "",
@@ -1007,6 +1065,7 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
     total_cost_usd: Number(totalCost.toFixed(6)),
     score,
     research_hours_saved,
+    plain_summary,
     report_markdown: report,
     summary:
       `Score ${totalScore}/100 · saved ~${research_hours_saved}h. ` +

@@ -146,6 +146,10 @@
   .leadlist li::before{content:"";position:absolute;left:0;top:.55em;width:.5rem;height:.5rem;border-radius:50%;background:hsl(var(--gold))}
   .leadlist b{color:hsl(var(--gold))}
 
+  .plaincard{background:linear-gradient(135deg,hsl(var(--card)),hsl(var(--bg2)));border:1px solid hsl(var(--gold)/.45);border-radius:var(--radius);padding:1.2rem 1.4rem;margin-bottom:1.1rem}
+  .plainh{font-family:'Playfair Display',serif;font-size:1.25rem;color:hsl(var(--gold));margin:0 0 .6rem}
+  .plaintext{font-size:14px;line-height:1.7;color:hsl(var(--fg))}
+
   footer{padding:3rem 0;border-top:1px solid hsl(var(--border));color:hsl(var(--muted));font-size:13px}
   footer .wrap{display:flex;gap:1rem;flex-wrap:wrap;align-items:center}
   footer .b{font-family:'Playfair Display',serif;font-weight:700;color:hsl(var(--fg));font-size:1.1rem}
@@ -405,6 +409,10 @@ $("#pdfs").onchange=async (e)=>{
   window.__demoFigure=null;
   const lib=await loadPdfjs();
   pdfFigures=[]; pdfCount=0; let allText="";
+  // Score every page by figure/table keyword density so we can pick the BEST
+  // pages (the ones that actually contain figures/tables) instead of always
+  // sending the first N pages — which for a textbook are often the preface.
+  const pageScored=[];
   for(let fi=0; fi<files.length; fi++){
     const f=files[fi];
     const buf=await f.arrayBuffer();
@@ -414,18 +422,30 @@ $("#pdfs").onchange=async (e)=>{
       const page=await pdf.getPage(p);
       const txt=await pageText(page);
       if(txt) allText+=(f.name+" — page "+p+"\n"+txt+"\n\n");
+      const sc=(txt.match(/\b(figure|fig\.|table|chart|diagram|plot|таблица|рис\.)\b/gi)||[]).length;
+      pageScored.push({fi,p,score:sc});
     }
     pdfCount+=np;
     setBar(0.05+0.2*((fi+1)/files.length));
   }
-  // Render pages to PNG figures (capped) for the vision agent.
+  // Render the BEST pages (highest figure-keyword score) for the vision agent.
   const maxp=Math.max(1,parseInt($("#maxpages").value)||6);
+  const maxScore=pageScored.length?Math.max(...pageScored.map(s=>s.score)):0;
+  let best;
+  if(maxScore>0){ best=pageScored.slice().sort((a,b)=>b.score-a.score).slice(0,maxp); }
+  else { best=pageScored.slice(0,maxp); } // no figure keywords anywhere -> first N
+  // render best pages (group by file so we open each PDF once)
+  const byFile={};
+  best.forEach(b=>{(byFile[b.fi]=byFile[b.fi]||[]).push(b.p);});
   let rendered=0;
-  for(let fi=0; fi<files.length && rendered<maxp; fi++){
+  for(const fiStr of Object.keys(byFile)){
+    if(rendered>=maxp) break;
+    const fi=+fiStr;
     const f=files[fi];
     const buf=await f.arrayBuffer();
     const pdf=await lib.getDocument({data:buf}).promise;
-    for(let p=1;p<=pdf.numPages && rendered<maxp;p++){
+    for(const p of byFile[fiStr]){
+      if(rendered>=maxp) break;
       const page=await pdf.getPage(p);
       const vp=page.getViewport({scale:1.4});
       const cv=document.createElement("canvas"); cv.width=vp.width; cv.height=vp.height;
@@ -436,14 +456,15 @@ $("#pdfs").onchange=async (e)=>{
       rendered++;
     }
   }
-  if(allText && !$("#paper").value.trim()) $("#paper").value=allText.slice(0,12000);
+  if(allText && !$("#paper").value.trim()) $("#paper").value=allText.slice(0,40000);
   const t0=await extractTitle(await lib.getDocument({data:await files[0].arrayBuffer()}).promise);
   if(t0 && !$("#title").value.trim()) $("#title").value=t0;
   const cits=extractCitations(allText);
   if(cits.length){ setCitations(cits); }
-  $("#pdfInfo").textContent=`${files.length} PDF(s) · ${pdfCount} pages · ${pdfFigures.length} page-figure(s) · ${cits.length} citations auto-filled`;
+  const how=maxScore>0?"best "+pdfFigures.length+" figure-bearing page(s)":"first "+pdfFigures.length+" page(s)";
+  $("#pdfInfo").textContent=`${files.length} PDF(s) · ${pdfCount} pages analysed · ${how} sent as figures · ${cits.length} citations auto-filled`;
   $("#figPreview").innerHTML=pdfFigures.slice(0,8).map(f=>`<img src="data:image/png;base64,${f.image_base64}" alt="${f.name}">`).join("");
-  setStatus("PDFs loaded. Edit text/citations if needed, then “Run pipeline”.");setBar(0);
+  setStatus("PDFs loaded. Whole document analysed — "+(maxScore>0?"best figure pages":"first pages")+" sent to the vision agent. Edit if needed, then “Run pipeline”.");setBar(0);
   }catch(err){ const msg="PDF parse error: "+(err&&err.message||err); setStatus(msg); $("#pdfInfo").textContent=msg; setBar(0); }
 };
 
@@ -469,28 +490,36 @@ $("#loadLink").onclick=async ()=>{
     const pdf=await lib.getDocument({data:buf}).promise;
     let txt=""; const maxp=Math.max(1,parseInt($("#maxpages").value)||6);
     pdfFigures=[];
+    const pageScored=[];
     for(let p=1;p<=pdf.numPages;p++){
       const page=await pdf.getPage(p);
-      txt+=await pageText(page); txt+="\n\n";
-      if(p<=maxp){
-        const vp=page.getViewport({scale:1.4});
-        const cv=document.createElement("canvas"); cv.width=vp.width; cv.height=vp.height;
-        const cx=cv.getContext("2d"); cx.fillStyle="#fff"; cx.fillRect(0,0,cv.width,cv.height);
-        await page.render({canvasContext:cx, viewport:vp}).promise;
-        pdfFigures.push({name:`link_p${p}.png`, image_base64:cv.toDataURL("image/png").split(",")[1], mime:"image/png"});
-      }
+      const pt=await pageText(page);
+      txt+=pt; txt+="\n\n";
+      const sc=(pt.match(/\b(figure|fig\.|table|chart|diagram|plot)\b/gi)||[]).length;
+      pageScored.push({p,score:sc});
     }
-    $("#paper").value=txt.slice(0,12000);
+    const maxScore=pageScored.length?Math.max(...pageScored.map(s=>s.score)):0;
+    const best=maxScore>0?pageScored.slice().sort((a,b)=>b.score-a.score).slice(0,maxp):pageScored.slice(0,maxp);
+    for(const b of best){
+      const page=await pdf.getPage(b.p);
+      const vp=page.getViewport({scale:1.4});
+      const cv=document.createElement("canvas"); cv.width=vp.width; cv.height=vp.height;
+      const cx=cv.getContext("2d"); cx.fillStyle="#fff"; cx.fillRect(0,0,cv.width,cv.height);
+      await page.render({canvasContext:cx, viewport:vp}).promise;
+      pdfFigures.push({name:`link_p${b.p}.png`, image_base64:cv.toDataURL("image/png").split(",")[1], mime:"image/png"});
+    }
+    $("#paper").value=txt.slice(0,40000);
     const t0=await extractTitle(pdf); if(t0 && !$("#title").value.trim()) $("#title").value=t0;
     const cits=extractCitations(txt); if(cits.length) setCitations(cits);
-    $("#pdfInfo").textContent=`Link PDF · ${pdf.numPages} pages · ${pdfFigures.length} page-figure(s) · ${cits.length} citations auto-filled`;
+    const how=maxScore>0?"best "+pdfFigures.length+" figure-bearing page(s)":"first "+pdfFigures.length+" page(s)";
+    $("#pdfInfo").textContent=`Link PDF · ${pdf.numPages} pages analysed · ${how} sent as figures · ${cits.length} citations auto-filled`;
     $("#figPreview").innerHTML=pdfFigures.slice(0,8).map(f=>`<img src="data:image/png;base64,${f.image_base64}" alt="${f.name}">`).join("");
   } else if(d.kind==="image"){
     pdfFigures.push({name:"link-image.png", image_base64:d.base64, mime:d.mime});
     $("#figPreview").innerHTML=`<img src="data:${d.mime};base64,${d.base64}" alt="link image">`;
     $("#pdfInfo").textContent="Loaded 1 image from link";
   } else { // html
-    $("#paper").value=d.text.slice(0,12000);
+    $("#paper").value=d.text.slice(0,40000);
     $("#pdfInfo").textContent="Loaded HTML text from link";
   }
   if(!$("#title").value.trim()){ try{$("#title").value=new URL(link).pathname.split("/").pop()||link;}catch(e){$("#title").value=link;} }
@@ -571,7 +600,9 @@ let lastReport=null;
 $("#dlReport").onclick=()=>{ if(!lastReport) return; const blob=new Blob([lastReport],{type:"text/markdown"}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download="verigraph-report.md"; a.click(); };
 
 function render(d){
-  let h=`<div class="summary">${esc(d.summary||"")}</div>`;
+  let h="";
+  if(d.plain_summary){ h+=`<div class="plaincard"><h2 class="plainh">Summary — in plain language</h2><div class="plaintext">${esc(d.plain_summary).replace(/\n/g,"<br>")}</div></div>`; }
+  h+=`<div class="summary">${esc(d.summary||"")}</div>`;
   if(d.score){
     const sc=d.score; const bd=sc.breakdown||{}; const total=sc.total??0;
     const grade=total>=80?"A":total>=65?"B":total>=50?"C":"D";
