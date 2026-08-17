@@ -140,6 +140,12 @@
   .barval{text-align:right;color:hsl(var(--fg));font-weight:600}
   .scorenote{font-size:11px;color:hsl(var(--muted));width:100%;line-height:1.5}
 
+  .lead-big{font-size:1.35rem;color:hsl(var(--gold));line-height:1.4;max-width:42rem;margin:1.4rem 0 .6rem}
+  .leadlist{list-style:none;padding:0;margin:.6rem 0 1rem;display:flex;flex-direction:column;gap:.5rem;max-width:42rem}
+  .leadlist li{position:relative;padding-left:1.6rem;color:hsl(var(--fg));line-height:1.5}
+  .leadlist li::before{content:"";position:absolute;left:0;top:.55em;width:.5rem;height:.5rem;border-radius:50%;background:hsl(var(--gold))}
+  .leadlist b{color:hsl(var(--gold))}
+
   footer{padding:3rem 0;border-top:1px solid hsl(var(--border));color:hsl(var(--muted));font-size:13px}
   footer .wrap{display:flex;gap:1rem;flex-wrap:wrap;align-items:center}
   footer .b{font-family:'Playfair Display',serif;font-weight:700;color:hsl(var(--fg));font-size:1.1rem}
@@ -176,7 +182,14 @@
   <div class="wrap">
     <span class="tag">[ Research_Agents_Hack · IIT_Madras · 2026 ]</span>
     <h1 class="serif">Extract figures.<br><em>Verify</em> citations.<br>Hypothesize.</h1>
-    <p class="lead">VeriGraph is a three-agent pipeline that turns a paper's figures and references into auditable structured data, citation verdicts, and evidence-grounded hypotheses — so researchers stop transcribing tables and citing ghosts.</p>
+    <p class="lead lead-big"><strong>Can you trust this paper's data and references — and what should you study next?</strong></p>
+    <p class="lead">Research assistants summarize papers. VeriGraph asks three sharper questions and answers them with auditable evidence:</p>
+    <ul class="leadlist">
+      <li><b>Extract</b> — turn every figure, table, and chart into structured data a computer can use.</li>
+      <li><b>Verify</b> — check every citation against Crossref's 150M+ records and flag the fakes.</li>
+      <li><b>Hypothesize</b> — propose new research questions, each tagged with the evidence it rests on.</li>
+    </ul>
+    <p class="lead">Instead of generating another summary, it returns a <em>trustworthiness score (0–100)</em>, a per-agent execution trace + handoff graph, a cost table, an estimate of research time saved — plus a downloadable Markdown report.</p>
     <div class="actions">
       <a class="btn btn-primary" href="#app">Try the live demo →</a>
       <a class="btn btn-ghost" href="#how">How the agents collaborate</a>
