@@ -374,12 +374,22 @@ function setCitations(cits){
 }
 
 // --- PDF.js for multi-paper upload + page rendering ---
+// Load pdfjs from CDN, but fetch the worker source and turn it into a
+// same-origin Blob URL — browsers block cross-origin module workers, which
+// is the #1 reason PDF parsing silently fails. The blob URL is same-origin.
 let pdfjsReady=null;
 async function loadPdfjs(){
   if(pdfjsReady) return pdfjsReady;
   pdfjsReady=(async()=>{
     const v=await import("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.min.mjs");
-    v.GlobalWorkerOptions.workerSrc="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs";
+    try{
+      const wsrc=await fetch("https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs").then(r=>r.text());
+      const blob=new Blob([wsrc],{type:"text/javascript"});
+      v.GlobalWorkerOptions.workerSrc=URL.createObjectURL(blob);
+    }catch(e){
+      // Fallback: let pdfjs run without a worker (slower, but works).
+      v.GlobalWorkerOptions.workerSrc="https://cdn.jsdelivr.net/npm/pdfjs-dist@4.8.69/build/pdf.worker.min.mjs";
+    }
     return v;
   })();
   return pdfjsReady;
@@ -434,7 +444,7 @@ $("#pdfs").onchange=async (e)=>{
   $("#pdfInfo").textContent=`${files.length} PDF(s) · ${pdfCount} pages · ${pdfFigures.length} page-figure(s) · ${cits.length} citations auto-filled`;
   $("#figPreview").innerHTML=pdfFigures.slice(0,8).map(f=>`<img src="data:image/png;base64,${f.image_base64}" alt="${f.name}">`).join("");
   setStatus("PDFs loaded. Edit text/citations if needed, then “Run pipeline”.");setBar(0);
-  }catch(err){ setStatus("PDF parse error: "+(err&&err.message||err)); setBar(0); }
+  }catch(err){ const msg="PDF parse error: "+(err&&err.message||err); setStatus(msg); $("#pdfInfo").textContent=msg; setBar(0); }
 };
 
 // --- Load from a link via /api/fetch ---
@@ -486,6 +496,7 @@ $("#loadLink").onclick=async ()=>{
   if(!$("#title").value.trim()){ try{$("#title").value=new URL(link).pathname.split("/").pop()||link;}catch(e){$("#title").value=link;} }
   setBar(0);
   setStatus("Link loaded. Add citations if needed, then “Run pipeline”.");
+  }catch(err){ const msg="Link/PDF error: "+(err&&err.message||err); setStatus(msg); $("#pdfInfo").textContent=msg; setBar(0); }
 };
 
 function buildDemoTable(){return new Promise(res=>{
