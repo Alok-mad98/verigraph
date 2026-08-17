@@ -1,5 +1,7 @@
 # VeriGraph
 
+[![Watch the demo](https://img.shields.io/badge/Watch%20demo-YouTube-red?logo=youtube)](https://youtu.be/VtlJq5-yZSk)
+
 **Can you trust this paper's data and references — and what should you study next?**
 
 Research assistants summarize papers. **VeriGraph** asks three sharper questions
