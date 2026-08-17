@@ -24,6 +24,7 @@ export interface Env {
   TEXT_MODELS: string;
   CONTACT_EMAIL: string;
   MAX_FETCH_BYTES: string;
+  TINYFISH_API_KEY: string;
 }
 
 interface Figure {
@@ -82,6 +83,8 @@ interface CitationVerdict {
   matched_doi: string | null;
   matched_year: string | null;
   match_score: number;
+  web_title: string | null;
+  web_url: string | null;
   reasoning: string;
 }
 
@@ -427,6 +430,27 @@ function titleSimilarity(query: string, title: string | null): number {
 
 let env_CONTACT_EMAIL = "verigraph@example.com";
 
+// TinyFish web search — free, indexes the live web including 2026 preprints,
+// blogs, datasets, and papers not yet in Crossref. Used as a second source
+// when Crossref has no match or a weak match, so recent work still verifies.
+async function tinyfishLookup(query: string, apiKey: string): Promise<{ title: string; url: string; snippet: string } | null> {
+  if (!apiKey) return null;
+  try {
+    const url = `https://agent.tinyfish.ai/v1/search?query=${encodeURIComponent(query)}`;
+    const res = await fetch(url, {
+      headers: { "X-API-Key": apiKey, Accept: "application/json" },
+      cf: { cacheTtl: 60 },
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { results?: Array<{ title: string; url: string; snippet: string }> };
+    const top = json.results?.[0];
+    if (!top || !top.title) return null;
+    return { title: top.title, url: top.url, snippet: (top.snippet || "").slice(0, 200) };
+  } catch {
+    return null;
+  }
+}
+
 async function runCitationVerifier(
   env: Env,
   citations: Citation[],
@@ -434,6 +458,7 @@ async function runCitationVerifier(
   const verdicts: CitationVerdict[] = [];
   let totalUsage: TokenUsage = { prompt_tokens: 0, completion_tokens: 0 };
   let note = "ok";
+  const tfKey = env.TINYFISH_API_KEY || "";
 
   for (const cite of citations) {
     try {
@@ -441,12 +466,33 @@ async function runCitationVerifier(
       const found = await crossrefLookup(cite.raw_text);
       let status: CitationVerdict["status"];
       let reasoning: string;
+      let webTitle: string | null = null;
+      let webUrl: string | null = null;
+
       if (!found.matched_title) {
-        status = "not_found";
-        reasoning = "No Crossref match found — citation may be fabricated or mis-typed.";
+        // Crossref found nothing — try the live web (TinyFish) for recent work.
+        const web = await tinyfishLookup(cite.raw_text, tfKey);
+        if (web && titleSimilarity(cite.raw_text, web.title) >= 0.5) {
+          status = "verified";
+          webTitle = web.title;
+          webUrl = web.url;
+          reasoning = `Not in Crossref, but verified via live web search: "${web.title}" (${web.url}).`;
+        } else {
+          status = "not_found";
+          reasoning = "No Crossref match and no convincing web match — citation may be fabricated or mis-typed.";
+        }
       } else if (found.match_score < 0.6) {
-        status = "fabricated";
-        reasoning = `Crossref's best match "${found.matched_title}" shares little wording with the cited text — likely fabricated.`;
+        // Crossref match is weak — corroborate with a web search.
+        const web = await tinyfishLookup(cite.raw_text, tfKey);
+        if (web && titleSimilarity(cite.raw_text, web.title) >= 0.5) {
+          status = "verified";
+          webTitle = web.title;
+          webUrl = web.url;
+          reasoning = `Crossref match was weak, but live web search confirms "${web.title}" (${web.url}).`;
+        } else {
+          status = "fabricated";
+          reasoning = `Crossref's best match "${found.matched_title}" shares little wording with the cited text and no web match — likely fabricated.`;
+        }
       } else if (!cite.claim || !cite.claim.trim()) {
         // Auto-filled citations carry no specific claim; existence alone is enough.
         status = "verified";
@@ -487,6 +533,8 @@ async function runCitationVerifier(
         matched_doi: found.matched_doi,
         matched_year: found.matched_year,
         match_score: Number(found.match_score.toFixed(3)),
+        web_title: webTitle,
+        web_url: webUrl,
         reasoning,
       });
     } catch (err) {
@@ -500,6 +548,8 @@ async function runCitationVerifier(
         matched_doi: null,
         matched_year: null,
         match_score: 0,
+        web_title: null,
+        web_url: null,
         reasoning: `verifier error: ${(err as Error).message}`,
       });
     }
@@ -636,8 +686,18 @@ export default {
       });
     }
 
-    // Fall through to static assets for the UI.
-    return env.ASSETS.fetch(request);
+    // Fall through to static assets for the UI. Never let the CDN cache the
+    // HTML shell — judges must always see the latest build. Other assets
+    // (images) keep the default cache.
+    const assetRes = await env.ASSETS.fetch(request);
+    const ct = assetRes.headers.get("content-type") || "";
+    if (ct.includes("text/html")) {
+      const headers = new Headers(assetRes.headers);
+      headers.set("Cache-Control", "no-store, max-age=0");
+      headers.set("CDN-Cache-Control", "no-store");
+      return new Response(assetRes.body, { status: assetRes.status, headers });
+    }
+    return assetRes;
   },
 } satisfies ExportedHandler<Env>;
 
@@ -790,6 +850,11 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
   if (body.figures && body.figures.length > 0) {
     for (const figure of body.figures) {
       const startedAt = nowIso();
+      const mime = (figure.mime_type || "image/png").toLowerCase();
+      if (!mime.startsWith("image/")) {
+        recordTrace("Vision Extractor", env.VISION_MODEL, "skipped (not an image)", {}, startedAt, `skipped ${figure.name}: mime ${mime} — render PDF pages to PNG first`);
+        continue;
+      }
       try {
         const { datum, usage, model_used } = await runVisionExtractor(env, figure);
         if (datum) extracted_data.push(datum);
@@ -813,6 +878,18 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
     recordTrace("Citation Verifier", env.VISION_MODEL, "verify citations", {}, startedCite, `error: ${(err as Error).message}`);
   }
 
+  // De-duplicate extracted figures: when a PDF is rendered as several page
+  // images the vision agent often produces near-identical "other" entries.
+  const seenSig = new Set<string>();
+  const dedupedData = extracted_data.filter((d) => {
+    const sig = `${d.kind}|${d.rows.length}|${JSON.stringify(d.rows[0] ?? "")}|${(d.caption || "").slice(0, 60)}`;
+    if (seenSig.has(sig)) return false;
+    seenSig.add(sig);
+    return true;
+  });
+  extracted_data.length = 0;
+  extracted_data.push(...dedupedData);
+
   // ---- Agent 3: Hypothesis Generator (GLM 5.2, auto-fallback to flash) ----
   const startedHyp = nowIso();
   let hypotheses: Hypothesis[] = [];
@@ -825,6 +902,15 @@ async function handleAnalyze(request: Request, env: Env): Promise<Response> {
     });
     void raw;
     hypotheses = hyps;
+    // De-duplicate hypotheses with near-identical statements (models often
+    // restate the same question with minor wording changes).
+    const seen = new Set<string>();
+    hypotheses = hypotheses.filter((h) => {
+      const key = h.statement.toLowerCase().replace(/[^a-z0-9 ]/g, "").trim().slice(0, 80);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
     textModelUsed = model_used;
     recordTrace(
       "Hypothesis Generator",

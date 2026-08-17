@@ -330,22 +330,37 @@ async function extractTitle(pdf){
 function extractCitations(text){
   if(!text) return [];
   // Find the references section heading (now that line breaks are preserved).
+  let refs=null;
   const m=text.match(/\n\s*(REFERENCES|References|Bibliography|REFERENCES CITED|文献)\s*[\n:.\s]/);
-  if(!m) return [];
-  let refs=text.slice(m.index+m[0].length).trim();
-  // Cut off any trailing appendix/acknowledgements to reduce noise.
-  const stop=refs.search(/\n\s*(Acknowledg|Appendix|Appendices|Figure|Tables|Fig\.|Author Contributions)/i);
-  if(stop>0) refs=refs.slice(0,stop);
+  if(m){ refs=text.slice(m.index+m[0].length).trim();
+    const stop=refs.search(/\n\s*(Acknowledg|Appendix|Appendices|Author Contributions)/i);
+    if(stop>0) refs=refs.slice(0,stop);
+  }
   let entries=[];
-  // [n] bracketed refs
-  const bracket=refs.split(/\n?\s*\[(\d{1,3})\]\s+/);
-  if(bracket.length>2){ entries=bracket.slice(1).filter((_,i)=>i%2===1).map(s=>s.trim()); }
-  // numbered refs "1. Author..."
-  if(entries.length<=1){ const num=refs.split(/\n\s*\d{1,3}\.\s+/); entries=num.map(s=>s.trim()).filter(Boolean); if(entries.length<=1) entries=[]; }
-  // blank-line separated paragraphs
-  if(!entries.length){ entries=refs.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean); }
-  // last resort: each non-empty line is a ref
-  if(!entries.length){ entries=refs.split(/\n/).map(s=>s.trim()).filter(Boolean); }
+  if(refs){
+    // [n] bracketed refs
+    const bracket=refs.split(/\n?\s*\[(\d{1,3})\]\s+/);
+    if(bracket.length>2){ entries=bracket.slice(1).filter((_,i)=>i%2===1).map(s=>s.trim()); }
+    // numbered refs "1. Author..."
+    if(entries.length<=1){ const num=refs.split(/\n\s*\d{1,3}\.\s+/); entries=num.map(s=>s.trim()).filter(Boolean); if(entries.length<=1) entries=[]; }
+    // blank-line separated paragraphs
+    if(!entries.length){ entries=refs.split(/\n\s*\n/).map(s=>s.trim()).filter(Boolean); }
+    // last resort: each non-empty line is a ref
+    if(!entries.length){ entries=refs.split(/\n/).map(s=>s.trim()).filter(Boolean); }
+  }
+  // Fallback: no "References" heading found — scan the whole doc for
+  // reference-like lines (DOI, arXiv, [n], or author-comma-year patterns).
+  // This catches PDFs where the heading is styled oddly or merged with text.
+  if(!entries.length){
+    const lines=text.split(/\n/).map(s=>s.trim()).filter(Boolean);
+    entries=lines.filter(ln=>
+      /\b(10\.\d{4,9}\/\S+)/.test(ln) ||                       // DOI
+      /arXiv:\s?\d{4}\.\d{4,5}/.test(ln) ||                    // arXiv
+      /^\[\d{1,3}\]\s/.test(ln) ||                             // [n]
+      /^\d{1,3}\.\s+[A-Z][a-z]/.test(ln) ||                    // 1. Author
+      /[A-Z][a-z]+,\s+[A-Z]\..*\b(19|20)\d{2}\b/.test(ln)      // Author, A. ... 2019
+    );
+  }
   return entries.slice(0,25)
     .map(e=>e.replace(/\s+/g," ").trim())
     .filter(e=>e.length>25 && e.length<600)
@@ -375,6 +390,7 @@ let pdfCount=0;
 $("#pdfs").onchange=async (e)=>{
   const files=Array.from(e.target.files);
   if(!files.length) return;
+  try{
   setStatus("Parsing "+files.length+" PDF(s)…");setBar(0.05);
   window.__demoFigure=null;
   const lib=await loadPdfjs();
@@ -418,12 +434,14 @@ $("#pdfs").onchange=async (e)=>{
   $("#pdfInfo").textContent=`${files.length} PDF(s) · ${pdfCount} pages · ${pdfFigures.length} page-figure(s) · ${cits.length} citations auto-filled`;
   $("#figPreview").innerHTML=pdfFigures.slice(0,8).map(f=>`<img src="data:image/png;base64,${f.image_base64}" alt="${f.name}">`).join("");
   setStatus("PDFs loaded. Edit text/citations if needed, then “Run pipeline”.");setBar(0);
+  }catch(err){ setStatus("PDF parse error: "+(err&&err.message||err)); setBar(0); }
 };
 
 // --- Load from a link via /api/fetch ---
 $("#loadLink").onclick=async ()=>{
   const link=$("#link").value.trim();
   if(!link){setStatus("Enter a URL first.");return;}
+  try{
   setStatus("Fetching link…");setBar(0.1);
   window.__demoFigure=null; figureFiles=[];
   let r;
@@ -503,10 +521,13 @@ async function run(){
   setStatus("Running 3-agent pipeline…");setBar(0.1);
   const paper=$("#paper").value.trim();
   if(paper.length<20){setStatus("Paper text too short.");done();return;}
-  const figures=[];
-  if(window.__demoFigure)figures.push(window.__demoFigure);
-  for(const f of figureFiles)figures.push({name:f.name,image_base64:await fileToB64(f),mime_type:f.type||"image/png"});
-  for(const pf of pdfFigures)figures.push(pf);
+  const allFigs=[];
+  if(window.__demoFigure)allFigs.push(window.__demoFigure);
+  for(const f of figureFiles)allFigs.push({name:f.name,image_base64:await fileToB64(f),mime_type:f.type||"image/png"});
+  for(const pf of pdfFigures)allFigs.push(pf);
+  const figures=allFigs.filter(f=>String(f.mime_type||"image/png").toLowerCase().startsWith("image/"));
+  const skipped=allFigs.length-figures.length;
+  if(skipped) setStatus(`Skipped ${skipped} non-image figure(s) — PDFs must go in the "upload PDF" box, not "Extra figures".`);
   const citations=[];
   document.querySelectorAll("#citations .citrow").forEach((row,i)=>{const raw=row.querySelector(".citeRaw").value.trim(),claim=row.querySelector(".citeClaim").value.trim();if(raw)citations.push({id:`C${i+1}`,raw_text:raw,claim});});
   setBar(0.25);
@@ -558,7 +579,7 @@ function render(d){
     if(ex.anomalies&&ex.anomalies.length)h+=`<div class="ev">Anomalies: ${ex.anomalies.map(esc).join(" · ")}</div></div>`;else h+=`</div>`;});
 
   h+=`<h2 class="sec">Citation verdicts (${d.citation_verdicts.length})</h2>`;
-  d.citation_verdicts.forEach(v=>{const ico=v.status==='verified'?'✓':(v.status==='fabricated'||v.status==='not_found')?'✗':'⚠';h+=`<div class="rcard"><h3>${ico} ${esc(v.citation_id)} <span class="pill ${v.status==='verified'?'ok':(v.status==='fabricated'||v.status==='not_found')?'bad':'warn'}">${esc(v.status)}</span></h3><div class="ev"><b>Cited as:</b> ${esc(v.raw_text)}</div>${v.claim?`<div class="ev"><b>Claim:</b> ${esc(v.claim)}</div>`:""}<div class="ev"><b>Matched:</b> ${esc(v.matched_title||"(none)")} ${v.matched_doi?`· DOI <a href="https://doi.org/${encodeURIComponent(v.matched_doi)}" target="_blank" rel="noopener" class="gold">${esc(v.matched_doi)}</a>`:""} ${v.matched_year?`· ${esc(v.matched_year)}`:""} · score ${v.match_score}</div><div class="v-${v.status}">${esc(v.reasoning)}</div></div>`;});
+  d.citation_verdicts.forEach(v=>{const ico=v.status==='verified'?'✓':(v.status==='fabricated'||v.status==='not_found')?'✗':'⚠';h+=`<div class="rcard"><h3>${ico} ${esc(v.citation_id)} <span class="pill ${v.status==='verified'?'ok':(v.status==='fabricated'||v.status==='not_found')?'bad':'warn'}">${esc(v.status)}</span></h3><div class="ev"><b>Cited as:</b> ${esc(v.raw_text)}</div>${v.claim?`<div class="ev"><b>Claim:</b> ${esc(v.claim)}</div>`:""}<div class="ev"><b>Matched:</b> ${esc(v.matched_title||"(none)")} ${v.matched_doi?`· DOI <a href="https://doi.org/${encodeURIComponent(v.matched_doi)}" target="_blank" rel="noopener" class="gold">${esc(v.matched_doi)}</a>`:""} ${v.matched_year?`· ${esc(v.matched_year)}`:""} · score ${v.match_score}</div>${v.web_title?`<div class="ev"><b>Web:</b> ${esc(v.web_title)} ${v.web_url?`· <a href="${esc(v.web_url)}" target="_blank" rel="noopener" class="gold">link</a>`:""}</div>`:""}<div class="v-${v.status}">${esc(v.reasoning)}</div></div>`;});
 
   h+=`<h2 class="sec">Agent handoffs (evidence graph)</h2>`;
   if(d.handoffs&&d.handoffs.length){h+=`<div class="rcard">`;d.handoffs.forEach(hf=>h+=`<div class="ev"><b>${esc(hf.from)}</b> → <b>${esc(hf.to)}</b> via <span class="mono">${esc(hf.state)}</span> (${hf.item_count} item(s))</div>`);h+=`</div>`;}else{h+=`<div class="rcard ev">No handoffs recorded.</div>`;}
