@@ -460,80 +460,78 @@ async function runCitationVerifier(
   let totalUsage: TokenUsage = { prompt_tokens: 0, completion_tokens: 0 };
   let note = "ok";
   const tfKey = env.TINYFISH_API_KEY || "";
+  let webConfirmations = 0;
 
   for (const cite of citations) {
     try {
-      // First, deterministically verify via Crossref (reliable, free, tool-like).
-      const found = await crossrefLookup(cite.raw_text);
+      // ALWAYS check BOTH sources in parallel: Crossref (150M+ records) AND
+      // TinyFish (live web, free, 2026 data). This way every citation is
+      // verified against the internet, not just a bibliographic DB.
+      const [cross, web] = await Promise.all([
+        crossrefLookup(cite.raw_text),
+        tinyfishLookup(cite.raw_text, tfKey),
+      ]);
+      const webStrong = web && titleSimilarity(cite.raw_text, web.title) >= 0.5;
+      let webTitle = webStrong ? web!.title : null;
+      let webUrl = webStrong ? web!.url : null;
+      if (webStrong) webConfirmations++;
+
       let status: CitationVerdict["status"];
       let reasoning: string;
-      let webTitle: string | null = null;
-      let webUrl: string | null = null;
 
-      if (!found.matched_title) {
-        // Crossref found nothing — try the live web (TinyFish) for recent work.
-        const web = await tinyfishLookup(cite.raw_text, tfKey);
-        if (web && titleSimilarity(cite.raw_text, web.title) >= 0.5) {
+      if (cross.matched_title && cross.match_score >= 0.6) {
+        // Crossref found a strong match.
+        if (!cite.claim || !cite.claim.trim()) {
           status = "verified";
-          webTitle = web.title;
-          webUrl = web.url;
-          reasoning = `Not in Crossref, but verified via live web search: "${web.title}" (${web.url}).`;
+          reasoning = `Verified in Crossref: "${cross.matched_title}" (${cross.matched_year ?? "n.d."})${webStrong ? ` — also confirmed on the live web: "${web!.title}"` : ""}.`;
         } else {
-          status = "not_found";
-          reasoning = "No Crossref match and no convincing web match — citation may be fabricated or mis-typed.";
+          // Ask Kimi whether the claim fits the matched work.
+          const judge = await runChatWithFallback(env, modelsList(env.VISION_MODELS, env.VISION_MODEL), {
+            messages: [
+              { role: "system", content: CITATION_SYSTEM },
+              {
+                role: "user",
+                content:
+                  `Citation id: ${cite.id}\nCited as: "${cite.raw_text}"\nClaim: "${cite.claim}"\n` +
+                  `Crossref best match -> title: "${cross.matched_title}", DOI: ${cross.matched_doi}, year: ${cross.matched_year}.\n` +
+                  `Decide: is the claim plausibly supported by this work? Reply ONLY with JSON: {"status":"verified"|"unsupported_claim","reasoning":"<one sentence>"}`,
+              },
+            ],
+            response_format: { type: "json_object" },
+            temperature: 0,
+          } as Record<string, unknown>);
+          addUsage(totalUsage, judge.usage);
+          const jp = robustParse(judge.content) as Record<string, unknown> | null;
+          if (jp && typeof jp === "object") {
+            status = (jp.status as CitationVerdict["status"]) ?? "verified";
+            reasoning = String(jp.reasoning ?? "claim appears consistent with matched work");
+          } else {
+            status = "verified";
+            reasoning = "Crossref matched the reference; claim judge failed, defaulting to verified-with-caution.";
+          }
+          if (webStrong) reasoning += ` Confirmed on the live web: "${web!.title}".`;
         }
-      } else if (found.match_score < 0.6) {
-        // Crossref match is weak — corroborate with a web search.
-        const web = await tinyfishLookup(cite.raw_text, tfKey);
-        if (web && titleSimilarity(cite.raw_text, web.title) >= 0.5) {
-          status = "verified";
-          webTitle = web.title;
-          webUrl = web.url;
-          reasoning = `Crossref match was weak, but live web search confirms "${web.title}" (${web.url}).`;
-        } else {
-          status = "fabricated";
-          reasoning = `Crossref's best match "${found.matched_title}" shares little wording with the cited text and no web match — likely fabricated.`;
-        }
-      } else if (!cite.claim || !cite.claim.trim()) {
-        // Auto-filled citations carry no specific claim; existence alone is enough.
+      } else if (webStrong) {
+        // Crossref weak/none, but the live web confirms it (recent preprint, blog, dataset…).
         status = "verified";
-        reasoning = `Reference exists in Crossref (matched "${found.matched_title}", ${found.matched_year ?? "n.d."}). No specific claim was provided to verify.`;
+        reasoning = `Not strongly in Crossref, but verified on the live web (TinyFish): "${web!.title}" (${web!.url}).`;
       } else {
-        // Ask Kimi to judge whether the *claim* fits the matched work.
-        const judge = await runChatWithFallback(env, modelsList(env.VISION_MODELS, env.VISION_MODEL), {
-          messages: [
-            { role: "system", content: CITATION_SYSTEM },
-            {
-              role: "user",
-              content:
-                `Citation id: ${cite.id}\nCited as: "${cite.raw_text}"\nClaim: "${cite.claim}"\n` +
-                `Crossref best match -> title: "${found.matched_title}", DOI: ${found.matched_doi}, year: ${found.matched_year}.\n` +
-                `Decide: is the claim plausibly supported by this work? Reply ONLY with JSON: {"status":"verified"|"unsupported_claim","reasoning":"<one sentence>"}`,
-            },
-          ],
-          response_format: { type: "json_object" },
-          temperature: 0,
-        } as Record<string, unknown>);
-
-        addUsage(totalUsage, judge.usage);
-        const jp = robustParse(judge.content) as Record<string, unknown> | null;
-        if (jp && typeof jp === "object") {
-          status = (jp.status as CitationVerdict["status"]) ?? "verified";
-          reasoning = String(jp.reasoning ?? "claim appears consistent with matched work");
-        } else {
-          status = "verified";
-          reasoning = "Crossref matched the reference; claim judge failed, defaulting to verified-with-caution.";
-        }
+        // Neither source confirms it.
+        status = cross.matched_title ? "fabricated" : "not_found";
+        reasoning = cross.matched_title
+          ? `Crossref's best match "${cross.matched_title}" shares little wording and the live web found no convincing match — likely fabricated.`
+          : "No Crossref match and no convincing web match — citation may be fabricated or mis-typed.";
       }
+
       verdicts.push({
         citation_id: cite.id,
         raw_text: cite.raw_text,
         claim: cite.claim,
         status,
-        matched_title: found.matched_title,
-        matched_doi: found.matched_doi,
-        matched_year: found.matched_year,
-        match_score: Number(found.match_score.toFixed(3)),
+        matched_title: cross.matched_title,
+        matched_doi: cross.matched_doi,
+        matched_year: cross.matched_year,
+        match_score: Number(cross.match_score.toFixed(3)),
         web_title: webTitle,
         web_url: webUrl,
         reasoning,
@@ -555,6 +553,7 @@ async function runCitationVerifier(
       });
     }
   }
+  if (webConfirmations > 0) note = `ok (${webConfirmations} citation(s) confirmed via live web search)`;
   return { verdicts, usage: totalUsage, trace_note: note };
 }
 
