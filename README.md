@@ -1,6 +1,12 @@
 # VeriGraph
 
-[![Watch the demo](https://img.shields.io/badge/Watch%20demo-YouTube-red?logo=youtube)](https://youtu.be/VtlJq5-yZSk)
+<p align="center">
+  <a href="https://youtu.be/VtlJq5-yZSk">
+    <img src="https://img.youtube.com/vi/VtlJq5-yZSk/maxresdefault.jpg" alt="Watch the VeriGraph demo" width="600">
+  </a>
+</p>
+
+> ▶️ **Click the thumbnail above to watch the demo** — or open https://youtu.be/VtlJq5-yZSk
 
 **Can you trust this paper's data and references — and what should you study next?**
 
